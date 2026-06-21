@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { supabase, uploadFile } from '../lib/supabase';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -305,30 +306,32 @@ function STLViewer({ dataUrl, color }: { dataUrl: string; color: string }) {
       dir2.position.set(-2, -1, -2);
       scene.add(dir2);
 
-      // Parse STL from data URL
-      const base64 = dataUrl.split(',')[1];
-      const binary  = atob(base64);
-      const buf     = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
-      const loader   = new STLLoader();
-      const geometry = loader.parse(buf.buffer);
-      geometry.computeBoundingBox();
-      geometry.center();
+      const loader = new STLLoader();
 
-      const size = new THREE.Box3().setFromObject(new THREE.Mesh(geometry)).getSize(new THREE.Vector3());
-      const maxDim = Math.max(size.x, size.y, size.z);
-      camera.position.set(0, 0, maxDim * 2);
+      function addGeometry(geometry: import('three').BufferGeometry) {
+        geometry.computeBoundingBox();
+        geometry.center();
+        const size = new THREE.Box3().setFromObject(new THREE.Mesh(geometry)).getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        camera.position.set(0, 0, maxDim * 2);
+        const mat  = new THREE.MeshPhongMaterial({ color: color || '#34d399', specular: 0x333333, shininess: 60 });
+        scene.add(new THREE.Mesh(geometry, mat));
+        const grid = new THREE.GridHelper(maxDim * 3, 20, 0x1a1a1a, 0x1a1a1a);
+        (grid.material as import('three').Material & { transparent: boolean; opacity: number }).transparent = true;
+        (grid.material as import('three').Material & { opacity: number }).opacity = 0.4;
+        grid.position.y = -size.y / 2;
+        scene.add(grid);
+      }
 
-      const mat  = new THREE.MeshPhongMaterial({ color: color || '#34d399', specular: 0x333333, shininess: 60 });
-      const mesh = new THREE.Mesh(geometry, mat);
-      scene.add(mesh);
-
-      // Grid helper
-      const grid = new THREE.GridHelper(maxDim * 3, 20, 0x1a1a1a, 0x1a1a1a);
-      (grid.material as import('three').Material & { transparent: boolean; opacity: number }).transparent = true;
-      (grid.material as import('three').Material & { opacity: number }).opacity = 0.4;
-      grid.position.y = -size.y / 2;
-      scene.add(grid);
+      if (dataUrl.startsWith('data:')) {
+        const base64 = dataUrl.split(',')[1];
+        const binary = atob(base64);
+        const buf = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+        addGeometry(loader.parse(buf.buffer));
+      } else {
+        loader.load(dataUrl, addGeometry);
+      }
 
       const controls = new OrbitControls(camera, renderer.domElement);
       controls.enableDamping = true;
@@ -488,6 +491,69 @@ export default function Home() {
 
   const getFil = (id: string | null) => filaments.find(f => f.id === id);
 
+  // ── Supabase: load all data on mount ─────────────────────────────────────
+
+  useEffect(() => {
+    async function load() {
+      const [
+        { data: procs }, { data: sets }, { data: parts }, { data: comps },
+        { data: jobsData }, { data: filData }, { data: mcData },
+      ] = await Promise.all([
+        supabase.from('processes').select('*').order('sort_order'),
+        supabase.from('process_sets').select('*').order('sort_order'),
+        supabase.from('bom_parts').select('*').order('sort_order'),
+        supabase.from('components').select('*'),
+        supabase.from('print_jobs').select('*').order('created_at'),
+        supabase.from('filaments').select('*'),
+        supabase.from('machines').select('*'),
+      ]);
+      if (procs && procs.length > 0) {
+        const assembled: Process[] = procs.map((p: any) => ({
+          id: p.id, name: p.name, description: p.description,
+          sets: (sets ?? []).filter((s: any) => s.process_id === p.id).map((s: any) => ({
+            id: s.id, name: s.name, description: s.description,
+            imageUrl: s.image_url ?? null, file3mfUrl: s.file_3mf_url ?? null,
+            parts: (parts ?? []).filter((pt: any) => pt.set_id === s.id).map((pt: any) => ({
+              id: pt.id, name: pt.name, material: pt.material, color: pt.color,
+              timePerPiece: pt.time_per_piece, weightPerPiece: Number(pt.weight_per_piece),
+              defaultQty: pt.default_qty, stlDataUrl: pt.stl_url ?? null,
+            })),
+            components: (comps ?? []).filter((c: any) => c.set_id === s.id).map((c: any) => ({
+              id: c.id, name: c.name, spec: c.spec, qty: c.qty,
+            })),
+          })),
+        }));
+        setProcesses(assembled);
+        setSelProcId(assembled[0]?.id ?? '');
+        setExpandedSets(new Set([assembled[0]?.sets[0]?.id ?? '']));
+      }
+      if (jobsData && jobsData.length > 0) {
+        setJobs(jobsData.map((j: any) => ({
+          id: j.id, fileName: j.file_name, quantity: j.quantity,
+          timePerPiece: j.time_per_piece, weight: Number(j.weight),
+          material: j.material as PrintMat, status: j.status as JobStatus, totalTime: j.total_time,
+        })));
+      }
+      if (filData && filData.length > 0) {
+        setFilaments(filData.map((f: any) => ({
+          id: f.id, material: f.material, brand: f.brand,
+          colorName: f.color_name, hexCode: f.hex_code,
+          quantity: f.quantity, isOpened: f.is_opened, imageUrl: f.image_url,
+        })));
+      }
+      if (mcData && mcData.length > 0) {
+        setMachines(mcData.map((m: any) => ({
+          id: m.id, brand: m.brand, model: m.model,
+          specLink: m.spec_link, imageUrl: m.image_url ?? '',
+          hasAMS: m.has_ams, amsModel: m.ams_model, amsImageUrl: m.ams_image_url ?? '',
+          amsSlots: m.ams_slots as AmsSlots, externalSpool: m.external_spool ?? null,
+          buildVolume: m.build_volume, nozzles: m.nozzles ?? [],
+        })));
+      }
+    }
+    load();
+  }, []);
+
   // ── Handlers ──────────────────────────────────────────────────────────────
 
   function submitJob(e: React.SubmitEvent<HTMLFormElement>) {
@@ -517,41 +583,39 @@ export default function Home() {
     })));
   }
 
-  function submitRequest(e: React.FormEvent) {
+  async function submitRequest(e: React.FormEvent) {
     e.preventDefault();
     if (formMode === 'piece') {
       const linkedPart = pieceProjId ? processes.flatMap(p => p.sets).find(s => s.id === pieceProjId)?.parts[0] ?? null : null;
-      const name   = linkedPart ? linkedPart.name     : pieceForm.name;
-      const mat    = linkedPart ? linkedPart.material  : pieceForm.material;
-      const t      = linkedPart ? linkedPart.timePerPiece : (parseInt(pieceForm.timePerPiece) || 0);
-      const wt     = linkedPart ? linkedPart.weightPerPiece : (parseFloat(pieceForm.weight) || 0);
-      const qty    = parseInt(pieceForm.quantity) || 1;
-      setJobs(p => [...p, {
-        id: p.length + 1,
-        fileName: name.endsWith('.stl') ? name : `${name}.stl`,
-        quantity: qty, timePerPiece: t,
-        weight: wt,
-        material: mat as PrintMat, status: 'Waiting', totalTime: qty * t,
-      }]);
+      const name = linkedPart ? linkedPart.name : pieceForm.name;
+      const mat  = linkedPart ? linkedPart.material : pieceForm.material;
+      const t    = linkedPart ? linkedPart.timePerPiece : (parseInt(pieceForm.timePerPiece) || 0);
+      const wt   = linkedPart ? linkedPart.weightPerPiece : (parseFloat(pieceForm.weight) || 0);
+      const qty  = parseInt(pieceForm.quantity) || 1;
+      const fileName = name.endsWith('.stl') ? name : `${name}.stl`;
+      const { data: inserted } = await supabase.from('print_jobs').insert({
+        file_name: fileName, quantity: qty, time_per_piece: t,
+        weight: wt, material: mat, status: 'Waiting', total_time: qty * t,
+      }).select().single();
+      if (inserted) setJobs(p => [...p, { id: inserted.id, fileName, quantity: qty, timePerPiece: t, weight: wt, material: mat as PrintMat, status: 'Waiting', totalTime: qty * t }]);
       setPieceForm({ name: '', material: DEFAULT_MAT_TYPES[0], quantity: '1', timePerPiece: '', weight: '' });
       setPieceProcId(''); setPieceProjId('');
     } else {
-      const newJobs = bomRows
-        .map(r => ({ qty: parseInt(r.qty) || 0, r }))
-        .filter(({ qty }) => qty > 0)
-        .map(({ qty, r }, i) => ({
-          id: 0,
-          fileName: `${r.name.replace(/\s+/g, '_')}.stl`,
-          quantity: qty, timePerPiece: r.timePerPiece,
-          weight: r.weightPerPiece,
-          material: r.material as PrintMat, status: 'Waiting' as JobStatus,
-          totalTime: qty * r.timePerPiece,
-        }));
-      setJobs(p => [...p, ...newJobs.map((j, i) => ({ ...j, id: p.length + i + 1 }))]);
-      setBomRows([]);
-      setSetTplId('');
-      setSetQty('1');
-      setReqProcId('');
+      const rows = bomRows.map(r => ({ qty: parseInt(r.qty) || 0, r })).filter(({ qty }) => qty > 0);
+      const inserted = await Promise.all(rows.map(({ qty, r }) =>
+        supabase.from('print_jobs').insert({
+          file_name: `${r.name.replace(/\s+/g, '_')}.stl`, quantity: qty,
+          time_per_piece: r.timePerPiece, weight: r.weightPerPiece,
+          material: r.material, status: 'Waiting', total_time: qty * r.timePerPiece,
+        }).select().single()
+      ));
+      const newJobs: PrintJob[] = inserted.flatMap(({ data }) => data ? [{
+        id: data.id, fileName: data.file_name, quantity: data.quantity,
+        timePerPiece: data.time_per_piece, weight: Number(data.weight),
+        material: data.material as PrintMat, status: 'Waiting' as JobStatus, totalTime: data.total_time,
+      }] : []);
+      setJobs(p => [...p, ...newJobs]);
+      setBomRows([]); setSetTplId(''); setSetQty('1'); setReqProcId('');
     }
     setReqDone(true);
     setTimeout(() => setReqDone(false), 3000);
@@ -567,31 +631,26 @@ export default function Home() {
     if (filForm.isNewBrand && effectiveBrand && !filBrands.includes(effectiveBrand)) {
       setFilBrands(p => [...p, effectiveBrand]);
     }
-    setFilaments(p => [...p, {
-      id: uid(), material: mat, brand: effectiveBrand,
-      colorName: filForm.colorName, hexCode: filForm.hexCode,
-      quantity: parseInt(filForm.quantity) || 1,
-      isOpened: false,
-    }]);
+    const newFil = { id: uid(), material: mat, brand: effectiveBrand, colorName: filForm.colorName, hexCode: filForm.hexCode, quantity: parseInt(filForm.quantity) || 1, isOpened: false };
+    setFilaments(p => [...p, newFil]);
+    supabase.from('filaments').insert({ id: newFil.id, material: mat, brand: effectiveBrand, color_name: filForm.colorName, hex_code: filForm.hexCode, quantity: newFil.quantity, is_opened: false }).then();
     setActiveMat(mat);
     setShowFil(false);
     setFilForm({ material: DEFAULT_MAT_TYPES[0], brand: '', colorName: '', hexCode: '#34D399', quantity: '', newType: '', isNewType: false, isNewBrand: false, newBrand: '', isCustomColor: false });
   }
 
-  function handleMachineImg(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleMachineImg(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setMcForm(p => ({ ...p, imageUrl: reader.result as string }));
-    reader.readAsDataURL(file);
+    const url = await uploadFile('images', `machines/${uid()}_${file.name}`, file);
+    setMcForm(p => ({ ...p, imageUrl: url }));
   }
 
-  function handleAmsImg(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleAmsImg(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setMcForm(p => ({ ...p, amsImageUrl: reader.result as string }));
-    reader.readAsDataURL(file);
+    const url = await uploadFile('images', `machines/ams_${uid()}_${file.name}`, file);
+    setMcForm(p => ({ ...p, amsImageUrl: url }));
   }
 
   function submitMachine(e: React.SubmitEvent<HTMLFormElement>) {
@@ -609,18 +668,16 @@ export default function Home() {
       }));
     }
 
-    setMachines(p => [...p, {
+    const newMc = {
       id: uid(), brand: effectiveBrand, model: effectiveModel,
       specLink: mcForm.specLink, imageUrl: mcForm.imageUrl,
       hasAMS: mcForm.hasAMS, amsModel: mcForm.amsModel, amsImageUrl: mcForm.amsImageUrl,
-      amsSlots: [null, null, null, null], externalSpool: null,
-      buildVolume: {
-        width:  parseFloat(mcForm.buildVolume.width)  || 0,
-        depth:  parseFloat(mcForm.buildVolume.depth)  || 0,
-        height: parseFloat(mcForm.buildVolume.height) || 0,
-      },
+      amsSlots: [null, null, null, null] as AmsSlots, externalSpool: null,
+      buildVolume: { width: parseFloat(mcForm.buildVolume.width) || 0, depth: parseFloat(mcForm.buildVolume.depth) || 0, height: parseFloat(mcForm.buildVolume.height) || 0 },
       nozzles: [...mcForm.nozzles],
-    }]);
+    };
+    setMachines(p => [...p, newMc]);
+    supabase.from('machines').insert({ id: newMc.id, brand: effectiveBrand, model: effectiveModel, spec_link: mcForm.specLink, image_url: mcForm.imageUrl, has_ams: mcForm.hasAMS, ams_model: mcForm.amsModel, ams_image_url: mcForm.amsImageUrl, ams_slots: [], external_spool: null, build_volume: newMc.buildVolume, nozzles: mcForm.nozzles }).then();
     setShowMachine(false);
     setMcForm({
       brand: '', isNewBrand: false, newBrand: '',
@@ -692,6 +749,7 @@ export default function Home() {
       setMcPage(pg => Math.min(pg, Math.max(0, next.length - 1)));
       return next;
     });
+    supabase.from('machines').delete().eq('id', id).then();
   }
 
 
@@ -735,6 +793,7 @@ export default function Home() {
 
   function deleteFilamentGroup(ids: string[]) {
     setFilaments(p => p.filter(f => !ids.includes(f.id)));
+    supabase.from('filaments').delete().in('id', ids).then();
   }
 
   // ── Shared style atoms ────────────────────────────────────────────────────
@@ -1153,11 +1212,13 @@ export default function Home() {
             if (!procForm.name.trim()) return;
             if (editProcId) {
               setProcesses(p => p.map(pr => pr.id !== editProcId ? pr : { ...pr, name: procForm.name.trim(), description: procForm.description.trim() }));
+              supabase.from('processes').update({ name: procForm.name.trim(), description: procForm.description.trim() }).eq('id', editProcId).then();
               setEditProcId(null);
             } else {
               const newProc: Process = { id: uid(), name: procForm.name.trim(), description: procForm.description.trim(), sets: [] };
               setProcesses(p => [...p, newProc]);
               setSelProcId(newProc.id);
+              supabase.from('processes').insert({ id: newProc.id, name: newProc.name, description: newProc.description, sort_order: processes.length }).then();
             }
             setProcForm({ name: '', description: '' });
             setShowProcForm(false);
@@ -1166,6 +1227,7 @@ export default function Home() {
           function deleteProc(id: string) {
             setProcesses(p => p.filter(pr => pr.id !== id));
             setSelProcId(ps => ps === id ? (processes.find(pr => pr.id !== id)?.id ?? '') : ps);
+            supabase.from('processes').delete().eq('id', id).then();
           }
 
           function saveSet() {
@@ -1174,11 +1236,13 @@ export default function Home() {
               setProcesses(p => p.map(pr => pr.id !== editSetKey.procId ? pr : {
                 ...pr, sets: pr.sets.map(s => s.id !== editSetKey.setId ? s : { ...s, name: setForm.name.trim(), description: setForm.description.trim() }),
               }));
+              supabase.from('process_sets').update({ name: setForm.name.trim(), description: setForm.description.trim() }).eq('id', editSetKey.setId).then();
               setEditSetKey(null);
             } else if (addingSetTo) {
               const newSet: ProcessSet = { id: uid(), name: setForm.name.trim(), description: setForm.description.trim(), imageUrl: null, file3mfUrl: null, parts: [], components: [] };
               setProcesses(p => p.map(pr => pr.id !== addingSetTo ? pr : { ...pr, sets: [...pr.sets, newSet] }));
               setExpandedSets(s => new Set([...s, newSet.id]));
+              supabase.from('process_sets').insert({ id: newSet.id, process_id: addingSetTo, name: newSet.name, description: newSet.description, sort_order: 0 }).then();
               setAddingSetTo(null);
             }
             setSetForm({ name: '', description: '' });
@@ -1186,6 +1250,7 @@ export default function Home() {
 
           function deleteSet(procId: string, setId: string) {
             setProcesses(p => p.map(pr => pr.id !== procId ? pr : { ...pr, sets: pr.sets.filter(s => s.id !== setId) }));
+            supabase.from('process_sets').delete().eq('id', setId).then();
           }
 
           function savePart() {
@@ -1195,9 +1260,7 @@ export default function Home() {
               : null;
             const part: BomPart = {
               id: editPartKey?.partId ?? uid(),
-              name: partForm.name.trim(),
-              material: partForm.material,
-              color: partForm.color,
+              name: partForm.name.trim(), material: partForm.material, color: partForm.color,
               timePerPiece: parseInt(partForm.timePerPiece) || 0,
               weightPerPiece: parseFloat(partForm.weightPerPiece) || 0,
               defaultQty: parseInt(partForm.defaultQty) || 1,
@@ -1205,15 +1268,15 @@ export default function Home() {
             };
             if (editPartKey) {
               setProcesses(p => p.map(pr => pr.id !== editPartKey.procId ? pr : {
-                ...pr, sets: pr.sets.map(s => s.id !== editPartKey.setId ? s : {
-                  ...s, parts: s.parts.map(pt => pt.id !== editPartKey.partId ? pt : part),
-                }),
+                ...pr, sets: pr.sets.map(s => s.id !== editPartKey.setId ? s : { ...s, parts: s.parts.map(pt => pt.id !== editPartKey.partId ? pt : part) }),
               }));
+              supabase.from('bom_parts').update({ name: part.name, material: part.material, color: part.color, time_per_piece: part.timePerPiece, weight_per_piece: part.weightPerPiece, default_qty: part.defaultQty }).eq('id', part.id).then();
               setEditPartKey(null);
             } else if (addingPartTo) {
               setProcesses(p => p.map(pr => pr.id !== addingPartTo.procId ? pr : {
                 ...pr, sets: pr.sets.map(s => s.id !== addingPartTo.setId ? s : { ...s, parts: [...s.parts, part] }),
               }));
+              supabase.from('bom_parts').insert({ id: part.id, set_id: addingPartTo.setId, name: part.name, material: part.material, color: part.color, time_per_piece: part.timePerPiece, weight_per_piece: part.weightPerPiece, default_qty: part.defaultQty, stl_url: part.stlDataUrl, sort_order: 0 }).then();
               setAddingPartTo(null);
             }
             setPartForm({ name: '', material: DEFAULT_MAT_TYPES[0], color: '#a1a1aa', timePerPiece: '', weightPerPiece: '', defaultQty: '1', stlDataUrl: null });
@@ -1223,6 +1286,7 @@ export default function Home() {
             setProcesses(p => p.map(pr => pr.id !== procId ? pr : {
               ...pr, sets: pr.sets.map(s => s.id !== setId ? s : { ...s, parts: s.parts.filter(pt => pt.id !== partId) }),
             }));
+            supabase.from('bom_parts').delete().eq('id', partId).then();
           }
 
           function saveComp() {
@@ -1230,15 +1294,15 @@ export default function Home() {
             const comp: Component = { id: editCompKey?.compId ?? uid(), name: compForm.name.trim(), spec: compForm.spec.trim(), qty: parseInt(compForm.qty) || 1 };
             if (editCompKey) {
               setProcesses(p => p.map(pr => pr.id !== editCompKey.procId ? pr : {
-                ...pr, sets: pr.sets.map(s => s.id !== editCompKey.setId ? s : {
-                  ...s, components: s.components.map(c => c.id !== editCompKey.compId ? c : comp),
-                }),
+                ...pr, sets: pr.sets.map(s => s.id !== editCompKey.setId ? s : { ...s, components: s.components.map(c => c.id !== editCompKey.compId ? c : comp) }),
               }));
+              supabase.from('components').update({ name: comp.name, spec: comp.spec, qty: comp.qty }).eq('id', comp.id).then();
               setEditCompKey(null);
             } else if (addingCompTo) {
               setProcesses(p => p.map(pr => pr.id !== addingCompTo.procId ? pr : {
                 ...pr, sets: pr.sets.map(s => s.id !== addingCompTo.setId ? s : { ...s, components: [...s.components, comp] }),
               }));
+              supabase.from('components').insert({ id: comp.id, set_id: addingCompTo.setId, name: comp.name, spec: comp.spec, qty: comp.qty }).then();
               setAddingCompTo(null);
             }
             setCompForm({ name: '', spec: '', qty: '1' });
@@ -1248,6 +1312,7 @@ export default function Home() {
             setProcesses(p => p.map(pr => pr.id !== procId ? pr : {
               ...pr, sets: pr.sets.map(s => s.id !== setId ? s : { ...s, components: s.components.filter(c => c.id !== compId) }),
             }));
+            supabase.from('components').delete().eq('id', compId).then();
           }
 
           const inlineInp = 'border rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-emerald-400/50 transition-colors';
@@ -1386,18 +1451,14 @@ export default function Home() {
                                           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
                                           </svg>
-                                          <input type="file" accept="image/*" className="hidden" onChange={e => {
+                                          <input type="file" accept="image/*" className="hidden" onChange={async e => {
                                             const f = e.target.files?.[0]; if (!f) return;
-                                            const reader = new FileReader();
-                                            reader.onload = ev => setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : {
-                                              ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : { ...ss, imageUrl: ev.target?.result as string }),
-                                            }));
-                                            reader.readAsDataURL(f);
+                                            const url = await uploadFile('images', `sets/${s.id}/cover`, f);
+                                            setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : { ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : { ...ss, imageUrl: url }) }));
+                                            supabase.from('process_sets').update({ image_url: url }).eq('id', s.id).then();
                                           }} />
                                         </label>
-                                        <button title="Remove image" onClick={() => setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : {
-                                          ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : { ...ss, imageUrl: null }),
-                                        }))} className="p-1 rounded text-zinc-700 hover:text-red-500 hover:bg-red-500/10 transition-colors">
+                                        <button title="Remove image" onClick={() => { setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : { ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : { ...ss, imageUrl: null }) })); supabase.from('process_sets').update({ image_url: null }).eq('id', s.id).then(); }} className="p-1 rounded text-zinc-700 hover:text-red-500 hover:bg-red-500/10 transition-colors">
                                           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                             <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
                                           </svg>
@@ -1409,13 +1470,11 @@ export default function Home() {
                                           <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
                                         </svg>
                                         Photo
-                                        <input type="file" accept="image/*" className="hidden" onChange={e => {
+                                        <input type="file" accept="image/*" className="hidden" onChange={async e => {
                                           const f = e.target.files?.[0]; if (!f) return;
-                                          const reader = new FileReader();
-                                          reader.onload = ev => setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : {
-                                            ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : { ...ss, imageUrl: ev.target?.result as string }),
-                                          }));
-                                          reader.readAsDataURL(f);
+                                          const url = await uploadFile('images', `sets/${s.id}/cover`, f);
+                                          setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : { ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : { ...ss, imageUrl: url }) }));
+                                          supabase.from('process_sets').update({ image_url: url }).eq('id', s.id).then();
                                         }} />
                                       </label>
                                     )}
@@ -1531,25 +1590,14 @@ export default function Home() {
                                                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
                                                       </svg>
-                                                      <input type="file" accept=".stl" className="hidden" onChange={e => {
+                                                      <input type="file" accept=".stl" className="hidden" onChange={async e => {
                                                         const f = e.target.files?.[0]; if (!f) return;
-                                                        const reader = new FileReader();
-                                                        reader.onload = ev => {
-                                                          const url = ev.target?.result as string;
-                                                          setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : {
-                                                            ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : {
-                                                              ...ss, parts: ss.parts.map(pp => pp.id !== pt.id ? pp : { ...pp, stlDataUrl: url }),
-                                                            }),
-                                                          }));
-                                                        };
-                                                        reader.readAsDataURL(f);
+                                                        const url = await uploadFile('stl-files', `parts/${pt.id}.stl`, f);
+                                                        setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : { ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : { ...ss, parts: ss.parts.map(pp => pp.id !== pt.id ? pp : { ...pp, stlDataUrl: url }) }) }));
+                                                        supabase.from('bom_parts').update({ stl_url: url }).eq('id', pt.id).then();
                                                       }} />
                                                     </label>
-                                                    <button title="Remove STL" onClick={() => setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : {
-                                                      ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : {
-                                                        ...ss, parts: ss.parts.map(pp => pp.id !== pt.id ? pp : { ...pp, stlDataUrl: null }),
-                                                      }),
-                                                    }))} className="p-1 rounded text-zinc-700 hover:text-red-500 hover:bg-red-500/10 transition-colors">
+                                                    <button title="Remove STL" onClick={() => { setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : { ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : { ...ss, parts: ss.parts.map(pp => pp.id !== pt.id ? pp : { ...pp, stlDataUrl: null }) }) })); supabase.from('bom_parts').update({ stl_url: null }).eq('id', pt.id).then(); }} className="p-1 rounded text-zinc-700 hover:text-red-500 hover:bg-red-500/10 transition-colors">
                                                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                                         <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
                                                       </svg>
@@ -1561,18 +1609,11 @@ export default function Home() {
                                                       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
                                                     </svg>
                                                     Upload
-                                                    <input type="file" accept=".stl" className="hidden" onChange={e => {
+                                                    <input type="file" accept=".stl" className="hidden" onChange={async e => {
                                                       const f = e.target.files?.[0]; if (!f) return;
-                                                      const reader = new FileReader();
-                                                      reader.onload = ev => {
-                                                        const url = ev.target?.result as string;
-                                                        setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : {
-                                                          ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : {
-                                                            ...ss, parts: ss.parts.map(pp => pp.id !== pt.id ? pp : { ...pp, stlDataUrl: url }),
-                                                          }),
-                                                        }));
-                                                      };
-                                                      reader.readAsDataURL(f);
+                                                      const url = await uploadFile('stl-files', `parts/${pt.id}.stl`, f);
+                                                      setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : { ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : { ...ss, parts: ss.parts.map(pp => pp.id !== pt.id ? pp : { ...pp, stlDataUrl: url }) }) }));
+                                                      supabase.from('bom_parts').update({ stl_url: url }).eq('id', pt.id).then();
                                                     }} />
                                                   </label>
                                                 )}
