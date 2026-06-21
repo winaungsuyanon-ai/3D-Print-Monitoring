@@ -7,7 +7,10 @@ export const supabase = createClient(
 
 export async function uploadFile(bucket: string, path: string, file: File): Promise<string> {
   const { error } = await supabase.storage.from(bucket).upload(path, file, { upsert: true });
-  if (error) throw error;
+  if (error) {
+    alert(`Upload failed (bucket: ${bucket}): ${error.message}`);
+    throw error;
+  }
   const { data } = supabase.storage.from(bucket).getPublicUrl(path);
   return data.publicUrl;
 }

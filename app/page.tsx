@@ -567,7 +567,7 @@ export default function Home() {
         id: m.id, brand: m.brand, model: m.model,
         specLink: m.spec_link, imageUrl: m.image_url ?? '',
         hasAMS: m.has_ams, amsModel: m.ams_model, amsImageUrl: m.ams_image_url ?? '',
-        amsSlots: m.ams_slots as AmsSlots, externalSpool: m.external_spool ?? null,
+        amsSlots: (Array.isArray(m.ams_slots) && m.ams_slots.length === 4 ? m.ams_slots : [null, null, null, null]) as AmsSlots, externalSpool: m.external_spool ?? null,
         buildVolume: m.build_volume, nozzles: m.nozzles ?? [],
       })));
     }
