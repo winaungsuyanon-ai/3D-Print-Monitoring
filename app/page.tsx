@@ -367,7 +367,7 @@ function STLViewer({ dataUrl, color }: { dataUrl: string; color: string }) {
 export default function Home() {
 
   // ── Tab ───────────────────────────────────────────────────────────────────
-  const [tab, setTab] = useState<Tab>('request');
+  const [tab, setTab] = useState<Tab>('detail');
 
   // ── Print queue ───────────────────────────────────────────────────────────
   const [jobs,      setJobs]      = useState<PrintJob[]>(SEED_JOBS);
