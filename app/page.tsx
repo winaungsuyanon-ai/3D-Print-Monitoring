@@ -494,6 +494,24 @@ export default function Home() {
   // ── Supabase: load all data on mount ─────────────────────────────────────
 
   useEffect(() => {
+    async function seedDB() {
+      for (const [i, p] of SEED_PROCESSES.entries()) {
+        await supabase.from('processes').insert({ id: p.id, name: p.name, description: p.description, sort_order: i });
+        for (const [j, s] of p.sets.entries()) {
+          await supabase.from('process_sets').insert({ id: s.id, process_id: p.id, name: s.name, description: s.description, image_url: s.imageUrl, file_3mf_url: s.file3mfUrl, sort_order: j });
+          for (const [k, pt] of s.parts.entries()) {
+            await supabase.from('bom_parts').insert({ id: pt.id, set_id: s.id, name: pt.name, material: pt.material, color: pt.color, time_per_piece: pt.timePerPiece, weight_per_piece: pt.weightPerPiece, default_qty: pt.defaultQty, stl_url: pt.stlDataUrl, sort_order: k });
+          }
+          for (const c of s.components) {
+            await supabase.from('components').insert({ id: c.id, set_id: s.id, name: c.name, spec: c.spec, qty: c.qty });
+          }
+        }
+      }
+      await supabase.from('filaments').insert(SEED_FILAMENTS.map(f => ({ id: f.id, brand: f.brand, color_name: f.colorName, hex_code: f.hexCode, material: f.material, quantity: f.quantity, is_opened: f.isOpened, image_url: f.imageUrl ?? null })));
+      await supabase.from('machines').insert(SEED_MACHINES.map(m => ({ id: m.id, brand: m.brand, model: m.model, spec_link: m.specLink, image_url: m.imageUrl, has_ams: m.hasAMS, ams_model: m.amsModel, ams_image_url: m.amsImageUrl, ams_slots: m.amsSlots, external_spool: m.externalSpool, build_volume: m.buildVolume, nozzles: m.nozzles })));
+      await supabase.from('print_jobs').insert(SEED_JOBS.map(j => ({ file_name: j.fileName, quantity: j.quantity, time_per_piece: j.timePerPiece, weight: j.weight, material: j.material, status: j.status, total_time: j.totalTime })));
+    }
+
     async function load() {
       const [
         { data: procs }, { data: sets }, { data: parts }, { data: comps },
@@ -507,49 +525,51 @@ export default function Home() {
         supabase.from('filaments').select('*'),
         supabase.from('machines').select('*'),
       ]);
-      if (procs && procs.length > 0) {
-        const assembled: Process[] = procs.map((p: any) => ({
-          id: p.id, name: p.name, description: p.description,
-          sets: (sets ?? []).filter((s: any) => s.process_id === p.id).map((s: any) => ({
-            id: s.id, name: s.name, description: s.description,
-            imageUrl: s.image_url ?? null, file3mfUrl: s.file_3mf_url ?? null,
-            parts: (parts ?? []).filter((pt: any) => pt.set_id === s.id).map((pt: any) => ({
-              id: pt.id, name: pt.name, material: pt.material, color: pt.color,
-              timePerPiece: pt.time_per_piece, weightPerPiece: Number(pt.weight_per_piece),
-              defaultQty: pt.default_qty, stlDataUrl: pt.stl_url ?? null,
-            })),
-            components: (comps ?? []).filter((c: any) => c.set_id === s.id).map((c: any) => ({
-              id: c.id, name: c.name, spec: c.spec, qty: c.qty,
-            })),
+
+      if (!procs || procs.length === 0) {
+        await seedDB();
+        await load();
+        return;
+      }
+
+      const assembled: Process[] = procs.map((p: any) => ({
+        id: p.id, name: p.name, description: p.description,
+        sets: (sets ?? []).filter((s: any) => s.process_id === p.id).map((s: any) => ({
+          id: s.id, name: s.name, description: s.description,
+          imageUrl: s.image_url ?? null, file3mfUrl: s.file_3mf_url ?? null,
+          parts: (parts ?? []).filter((pt: any) => pt.set_id === s.id).map((pt: any) => ({
+            id: pt.id, name: pt.name, material: pt.material, color: pt.color,
+            timePerPiece: pt.time_per_piece, weightPerPiece: Number(pt.weight_per_piece),
+            defaultQty: pt.default_qty, stlDataUrl: pt.stl_url ?? null,
           })),
-        }));
-        setProcesses(assembled);
-        setSelProcId(assembled[0]?.id ?? '');
-        setExpandedSets(new Set([assembled[0]?.sets[0]?.id ?? '']));
-      }
-      if (jobsData && jobsData.length > 0) {
-        setJobs(jobsData.map((j: any) => ({
-          id: j.id, fileName: j.file_name, quantity: j.quantity,
-          timePerPiece: j.time_per_piece, weight: Number(j.weight),
-          material: j.material as PrintMat, status: j.status as JobStatus, totalTime: j.total_time,
-        })));
-      }
-      if (filData && filData.length > 0) {
-        setFilaments(filData.map((f: any) => ({
-          id: f.id, material: f.material, brand: f.brand,
-          colorName: f.color_name, hexCode: f.hex_code,
-          quantity: f.quantity, isOpened: f.is_opened, imageUrl: f.image_url,
-        })));
-      }
-      if (mcData && mcData.length > 0) {
-        setMachines(mcData.map((m: any) => ({
-          id: m.id, brand: m.brand, model: m.model,
-          specLink: m.spec_link, imageUrl: m.image_url ?? '',
-          hasAMS: m.has_ams, amsModel: m.ams_model, amsImageUrl: m.ams_image_url ?? '',
-          amsSlots: m.ams_slots as AmsSlots, externalSpool: m.external_spool ?? null,
-          buildVolume: m.build_volume, nozzles: m.nozzles ?? [],
-        })));
-      }
+          components: (comps ?? []).filter((c: any) => c.set_id === s.id).map((c: any) => ({
+            id: c.id, name: c.name, spec: c.spec, qty: c.qty,
+          })),
+        })),
+      }));
+      setProcesses(assembled);
+      setSelProcId(assembled[0]?.id ?? '');
+      setExpandedSets(new Set([assembled[0]?.sets[0]?.id ?? '']));
+
+      setJobs((jobsData ?? []).map((j: any) => ({
+        id: j.id, fileName: j.file_name, quantity: j.quantity,
+        timePerPiece: j.time_per_piece, weight: Number(j.weight),
+        material: j.material as PrintMat, status: j.status as JobStatus, totalTime: j.total_time,
+      })));
+
+      setFilaments((filData ?? []).map((f: any) => ({
+        id: f.id, material: f.material, brand: f.brand,
+        colorName: f.color_name, hexCode: f.hex_code,
+        quantity: f.quantity, isOpened: f.is_opened, imageUrl: f.image_url,
+      })));
+
+      setMachines((mcData ?? []).map((m: any) => ({
+        id: m.id, brand: m.brand, model: m.model,
+        specLink: m.spec_link, imageUrl: m.image_url ?? '',
+        hasAMS: m.has_ams, amsModel: m.ams_model, amsImageUrl: m.ams_image_url ?? '',
+        amsSlots: m.ams_slots as AmsSlots, externalSpool: m.external_spool ?? null,
+        buildVolume: m.build_volume, nozzles: m.nozzles ?? [],
+      })));
     }
     load();
   }, []);
