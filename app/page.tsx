@@ -697,7 +697,7 @@ export default function Home() {
       nozzles: [...mcForm.nozzles],
     };
     setMachines(p => [...p, newMc]);
-    supabase.from('machines').insert({ id: newMc.id, brand: effectiveBrand, model: effectiveModel, spec_link: mcForm.specLink, image_url: mcForm.imageUrl, has_ams: mcForm.hasAMS, ams_model: mcForm.amsModel, ams_image_url: mcForm.amsImageUrl, ams_slots: [], external_spool: null, build_volume: newMc.buildVolume, nozzles: mcForm.nozzles }).then();
+    supabase.from('machines').insert({ id: newMc.id, brand: effectiveBrand, model: effectiveModel, spec_link: mcForm.specLink, image_url: mcForm.imageUrl, has_ams: mcForm.hasAMS, ams_model: mcForm.amsModel, ams_image_url: mcForm.amsImageUrl, ams_slots: [null, null, null, null], external_spool: null, build_volume: newMc.buildVolume, nozzles: mcForm.nozzles }).then();
     setShowMachine(false);
     setMcForm({
       brand: '', isNewBrand: false, newBrand: '',
@@ -708,6 +708,10 @@ export default function Home() {
     });
   }
 
+  function saveMachineToDB(m: Machine) {
+    supabase.from('machines').upsert({ id: m.id, brand: m.brand, model: m.model, spec_link: m.specLink, image_url: m.imageUrl, has_ams: m.hasAMS, ams_model: m.amsModel, ams_image_url: m.amsImageUrl, ams_slots: m.amsSlots, external_spool: m.externalSpool, build_volume: m.buildVolume, nozzles: m.nozzles }).then();
+  }
+
   function assignSlotByShape(sourceId: string) {
     if (!pickerSlot) return;
     const { machineId, idx } = pickerSlot;
@@ -716,44 +720,46 @@ export default function Home() {
 
     let slotId: string;
     if (sourceFil.quantity === 1) {
-      // Assign this record directly (mark opened if it was sealed)
       slotId = sourceFil.id;
       setFilaments(p => p.map(f => f.id !== sourceId ? f : { ...f, isOpened: true }));
+      supabase.from('filaments').update({ is_opened: true }).eq('id', sourceId).then();
     } else {
-      // Split: decrement the source record by 1, create a new single-roll record for the slot
       const newId = uid();
       slotId = newId;
       setFilaments(p => [
         ...p.map(f => f.id !== sourceId ? f : { ...f, quantity: f.quantity - 1 }),
         { ...sourceFil, id: newId, quantity: 1, isOpened: true },
       ]);
+      supabase.from('filaments').update({ quantity: sourceFil.quantity - 1 }).eq('id', sourceId).then();
+      supabase.from('filaments').insert({ id: newId, brand: sourceFil.brand, color_name: sourceFil.colorName, hex_code: sourceFil.hexCode, material: sourceFil.material, quantity: 1, is_opened: true, image_url: sourceFil.imageUrl ?? null }).then();
     }
 
-    setMachines(p => p.map(m => {
-      if (m.id !== machineId) return m;
-      if (idx === -1) return { ...m, externalSpool: slotId };
-      const s = [...m.amsSlots] as AmsSlots;
-      s[idx] = slotId;
-      return { ...m, amsSlots: s };
-    }));
+    const mc = machines.find(m => m.id === machineId);
+    if (!mc) return;
+    const updatedSlots = [...mc.amsSlots] as AmsSlots;
+    if (idx !== -1) updatedSlots[idx] = slotId;
+    const updatedMc = idx === -1 ? { ...mc, externalSpool: slotId } : { ...mc, amsSlots: updatedSlots };
+    setMachines(p => p.map(m => m.id !== machineId ? m : updatedMc));
+    saveMachineToDB(updatedMc);
     setPickerSlot(null);
     setSlotSearch('');
   }
 
   function clearSlot(machineId: string, idx: number) {
-    setMachines(p => p.map(m => {
-      if (m.id !== machineId) return m;
-      if (idx === -1) return { ...m, externalSpool: null };
-      const s = [...m.amsSlots] as AmsSlots;
-      s[idx] = null;
-      return { ...m, amsSlots: s };
-    }));
+    const mc = machines.find(m => m.id === machineId);
+    if (!mc) return;
+    const updatedSlots = [...mc.amsSlots] as AmsSlots;
+    if (idx !== -1) updatedSlots[idx] = null;
+    const updatedMc = idx === -1 ? { ...mc, externalSpool: null } : { ...mc, amsSlots: updatedSlots };
+    setMachines(p => p.map(m => m.id !== machineId ? m : updatedMc));
+    saveMachineToDB(updatedMc);
   }
 
   function confirmSlotEmpty() {
     if (!removeSlot) return;
     clearSlot(removeSlot.machineId, removeSlot.idx);
     setFilaments(p => p.filter(f => f.id !== removeSlot.filamentId));
+    supabase.from('filaments').delete().eq('id', removeSlot.filamentId).then();
     setRemoveSlot(null);
   }
 
@@ -2233,7 +2239,7 @@ export default function Home() {
                           )}
                           {mc.imageUrl && (
                             <button
-                              onClick={() => { setMachines(p => p.map(m => m.id !== mc.id ? m : { ...m, imageUrl: '' })); supabase.from('machines').upsert({ id: mc.id, brand: mc.brand, model: mc.model, spec_link: mc.specLink, image_url: '', has_ams: mc.hasAMS, ams_model: mc.amsModel, ams_image_url: mc.amsImageUrl, ams_slots: mc.amsSlots, external_spool: mc.externalSpool, build_volume: mc.buildVolume, nozzles: mc.nozzles }).then(); }}
+                              onClick={() => { const u = { ...mc, imageUrl: '' }; setMachines(p => p.map(m => m.id !== mc.id ? m : u)); saveMachineToDB(u); }}
                               className="absolute top-2 left-2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity bg-zinc-800/90 hover:bg-red-900/80 text-zinc-400 hover:text-red-400 text-xs z-10"
                             >×</button>
                           )}
@@ -2247,8 +2253,9 @@ export default function Home() {
                                 const file = e.target.files?.[0];
                                 if (!file) return;
                                 const url = await uploadFile('images', `machines/${mc.id}_photo`, file);
-                                setMachines(p => p.map(m => m.id !== mc.id ? m : { ...m, imageUrl: url }));
-                                supabase.from('machines').upsert({ id: mc.id, brand: mc.brand, model: mc.model, spec_link: mc.specLink, image_url: url, has_ams: mc.hasAMS, ams_model: mc.amsModel, ams_image_url: mc.amsImageUrl, ams_slots: mc.amsSlots, external_spool: mc.externalSpool, build_volume: mc.buildVolume, nozzles: mc.nozzles }).then();
+                                const updatedMc = { ...mc, imageUrl: url };
+                                setMachines(p => p.map(m => m.id !== mc.id ? m : updatedMc));
+                                saveMachineToDB(updatedMc);
                               }} />
                           </label>
                         </div>
@@ -2326,10 +2333,12 @@ export default function Home() {
                                     style={{ borderColor: owned ? '#34d39935' : '#18181b', backgroundColor: owned ? '#34d39908' : 'transparent' }}>
                                     <span className={`text-xs font-mono tabular-nums transition-colors ${owned ? 'text-emerald-400' : 'text-zinc-700'}`}>{size}</span>
                                     <input type="checkbox" checked={owned}
-                                      onChange={e => setMachines(p => p.map(m => m.id !== mc.id ? m : {
-                                        ...m,
-                                        nozzles: e.target.checked ? [...m.nozzles, size] : m.nozzles.filter(n => n !== size),
-                                      }))}
+                                      onChange={e => {
+                                        const newNozzles = e.target.checked ? [...mc.nozzles, size] : mc.nozzles.filter(n => n !== size);
+                                        const updatedMc = { ...mc, nozzles: newNozzles };
+                                        setMachines(p => p.map(m => m.id !== mc.id ? m : updatedMc));
+                                        saveMachineToDB(updatedMc);
+                                      }}
                                       className="w-3.5 h-3.5 cursor-pointer accent-emerald-400" />
                                   </label>
                                 );
@@ -2370,18 +2379,19 @@ export default function Home() {
                                         {mc.amsImageUrl ? 'Change' : '+ Photo'}
                                       </span>
                                       <input type="file" accept="image/*" className="hidden"
-                                        onChange={e => {
+                                        onChange={async e => {
                                           const file = e.target.files?.[0];
                                           if (!file) return;
-                                          const reader = new FileReader();
-                                          reader.onload = () => setMachines(p => p.map(m => m.id !== mc.id ? m : { ...m, amsImageUrl: reader.result as string }));
-                                          reader.readAsDataURL(file);
+                                          const url = await uploadFile('images', `machines/${mc.id}_ams`, file);
+                                          const updatedMc = { ...mc, amsImageUrl: url };
+                                          setMachines(p => p.map(m => m.id !== mc.id ? m : updatedMc));
+                                          saveMachineToDB(updatedMc);
                                         }} />
                                     </label>
                                   </div>
                                   {mc.amsImageUrl && (
                                     <button
-                                      onClick={() => setMachines(p => p.map(m => m.id !== mc.id ? m : { ...m, amsImageUrl: '' }))}
+                                      onClick={() => { const updatedMc = { ...mc, amsImageUrl: '' }; setMachines(p => p.map(m => m.id !== mc.id ? m : updatedMc)); saveMachineToDB(updatedMc); }}
                                       className="absolute top-1.5 right-1.5 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover/ams:opacity-100 transition-opacity bg-zinc-800/90 hover:bg-red-900/80 text-zinc-400 hover:text-red-400 text-xs z-10"
                                     >×</button>
                                   )}
