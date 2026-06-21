@@ -662,14 +662,14 @@ export default function Home() {
   async function handleMachineImg(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const url = await uploadFile('images', `machines/${uid()}_${file.name}`, file);
+    const url = await uploadFile('image', `machines/${uid()}_${file.name}`, file);
     setMcForm(p => ({ ...p, imageUrl: url }));
   }
 
   async function handleAmsImg(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const url = await uploadFile('images', `machines/ams_${uid()}_${file.name}`, file);
+    const url = await uploadFile('image', `machines/ams_${uid()}_${file.name}`, file);
     setMcForm(p => ({ ...p, amsImageUrl: url }));
   }
 
@@ -1479,7 +1479,7 @@ export default function Home() {
                                           </svg>
                                           <input type="file" accept="image/*" className="hidden" onChange={async e => {
                                             const f = e.target.files?.[0]; if (!f) return;
-                                            const url = await uploadFile('images', `sets/${s.id}/cover`, f);
+                                            const url = await uploadFile('image', `sets/${s.id}/cover`, f);
                                             setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : { ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : { ...ss, imageUrl: url }) }));
                                             supabase.from('process_sets').update({ image_url: url }).eq('id', s.id).then();
                                           }} />
@@ -1498,7 +1498,7 @@ export default function Home() {
                                         Photo
                                         <input type="file" accept="image/*" className="hidden" onChange={async e => {
                                           const f = e.target.files?.[0]; if (!f) return;
-                                          const url = await uploadFile('images', `sets/${s.id}/cover`, f);
+                                          const url = await uploadFile('image', `sets/${s.id}/cover`, f);
                                           setProcesses(p => p.map(pr => pr.id !== selProc.id ? pr : { ...pr, sets: pr.sets.map(ss => ss.id !== s.id ? ss : { ...ss, imageUrl: url }) }));
                                           supabase.from('process_sets').update({ image_url: url }).eq('id', s.id).then();
                                         }} />
@@ -2252,7 +2252,7 @@ export default function Home() {
                               onChange={async e => {
                                 const file = e.target.files?.[0];
                                 if (!file) return;
-                                const url = await uploadFile('images', `machines/${mc.id}_photo`, file);
+                                const url = await uploadFile('image', `machines/${mc.id}_photo`, file);
                                 const updatedMc = { ...mc, imageUrl: url };
                                 setMachines(p => p.map(m => m.id !== mc.id ? m : updatedMc));
                                 saveMachineToDB(updatedMc);
@@ -2382,7 +2382,7 @@ export default function Home() {
                                         onChange={async e => {
                                           const file = e.target.files?.[0];
                                           if (!file) return;
-                                          const url = await uploadFile('images', `machines/${mc.id}_ams`, file);
+                                          const url = await uploadFile('image', `machines/${mc.id}_ams`, file);
                                           const updatedMc = { ...mc, amsImageUrl: url };
                                           setMachines(p => p.map(m => m.id !== mc.id ? m : updatedMc));
                                           saveMachineToDB(updatedMc);
