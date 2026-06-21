@@ -2213,7 +2213,7 @@ export default function Home() {
                           )}
                           {mc.imageUrl && (
                             <button
-                              onClick={() => setMachines(p => p.map(m => m.id !== mc.id ? m : { ...m, imageUrl: '' }))}
+                              onClick={() => { setMachines(p => p.map(m => m.id !== mc.id ? m : { ...m, imageUrl: '' })); supabase.from('machines').upsert({ id: mc.id, brand: mc.brand, model: mc.model, spec_link: mc.specLink, image_url: '', has_ams: mc.hasAMS, ams_model: mc.amsModel, ams_image_url: mc.amsImageUrl, ams_slots: mc.amsSlots, external_spool: mc.externalSpool, build_volume: mc.buildVolume, nozzles: mc.nozzles }).then(); }}
                               className="absolute top-2 left-2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity bg-zinc-800/90 hover:bg-red-900/80 text-zinc-400 hover:text-red-400 text-xs z-10"
                             >×</button>
                           )}
@@ -2223,12 +2223,12 @@ export default function Home() {
                               {mc.imageUrl ? 'Change photo' : '+ Add photo'}
                             </span>
                             <input type="file" accept="image/*" className="hidden"
-                              onChange={e => {
+                              onChange={async e => {
                                 const file = e.target.files?.[0];
                                 if (!file) return;
-                                const reader = new FileReader();
-                                reader.onload = () => setMachines(p => p.map(m => m.id !== mc.id ? m : { ...m, imageUrl: reader.result as string }));
-                                reader.readAsDataURL(file);
+                                const url = await uploadFile('images', `machines/${mc.id}_photo`, file);
+                                setMachines(p => p.map(m => m.id !== mc.id ? m : { ...m, imageUrl: url }));
+                                supabase.from('machines').upsert({ id: mc.id, brand: mc.brand, model: mc.model, spec_link: mc.specLink, image_url: url, has_ams: mc.hasAMS, ams_model: mc.amsModel, ams_image_url: mc.amsImageUrl, ams_slots: mc.amsSlots, external_spool: mc.externalSpool, build_volume: mc.buildVolume, nozzles: mc.nozzles }).then();
                               }} />
                           </label>
                         </div>
