@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-NetTCPConnection -LocalPort 3003 -ErrorAction SilentlyContinue)",
+      "Bash(node -e \"const p = require\\('./node_modules/react/package.json'\\); console.log\\(p.version\\)\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d['version']\\)\")",
+      "Bash(npx tsc *)"
+    ]
+  }
+}
